@@ -1,0 +1,99 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Globals:
+  Function:
+    Tracing: Active
+    Timeout: 10
+    MemorySize: 512
+    Runtime: nodejs8.10
+Parameters:
+  CanaryDeploymentType:
+    Type: String
+    Default: AllAtOnce
+    AllowedValues:
+      - Canary10Percent30Minutes
+      - Canary10Percent5Minutes
+      - Canary10Percent10Minutes
+      - Canary10Percent15Minutes
+      - AllAtOnce
+      - Linear10PercentEvery10Minutes
+      - Linear10PercentEvery1Minute
+      - Linear10PercentEvery2Minutes
+      - Linear10PercentEvery3Minutes
+Resources:
+  MyFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: index.myHandler
+      AutoPublishAlias: live
+      DeploymentPreference:
+        Type: !Ref CanaryDeploymentType
+        Alarms:
+          - MyFunctionAliasErrorMetricGreaterThanZeroAlarm
+          - MyFunctionLatestVersionErrorMetricGreaterThanZeroAlarm
+      Events:
+        Stream:
+          Type: Kinesis
+          BatchSize: 100
+          Properties:
+            Stream: !GetAtt MyKinesisStream.Arn
+            StartingPosition: TRIM_HORIZON
+  MyFunctionAliasErrorMetricGreaterThanZeroAlarm:
+    Type: "AWS::CloudWatch::Alarm"
+    Properties:
+      AlarmDescription: Lambda Function Error > 0
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: Resource
+          Value: !Sub "${MyFunction}:live"
+        - Name: FunctionName
+          Value: !Ref MyFunction
+      EvaluationPeriods: 1
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Period: 60
+      Statistic: Sum
+      Threshold: 1
+  MyFunctionLatestVersionErrorMetricGreaterThanZeroAlarm:
+    Type: "AWS::CloudWatch::Alarm"
+    Properties:
+      AlarmDescription: Lambda Function Error > 0
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: Resource
+          Value: !Ref MyFunction.Version
+        - Name: FunctionName
+          Value: !Ref MyFunction
+      EvaluationPeriods: 1
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Period: 60
+      Statistic: Sum
+      Threshold: 1
+  MyKinesisStream:
+    Type: AWS::Kinesis::Stream
+    Properties:
+      Name: "MyStream"
+      ShardCount: 1
+      StreamEncryption:
+          EncryptionType: KMS
+          KeyId: !Ref MyKMSKey
+  MyKMSKey:
+    Type: 'AWS::KMS::Key'
+    Properties:
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: 2012-10-17
+        Id: kinesis
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action: "kms:*"
+            Resource: '*'
+Outputs:
+  KinesisStream:
+    Description: "Kinesis Stream that will trigger Lambda function upon new records"
+    Value: !GetAtt MyKinesisStream.Arn
+    Export:
+      Name: "MyStream"
